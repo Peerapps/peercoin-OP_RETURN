@@ -150,6 +150,106 @@ def OP_RETURN_store(data, testnet=False):
 
   return result
 
+def OP_RETURN_retrieve_fromblock(block_number=None, testnet=False):
+  # Validate parameters and get status of Bitcoin Core
+
+  if not OP_RETURN_bitcoin_check(testnet):
+    return {'error': 'Please check Bitcoin Core is running and OP_RETURN_BITCOIN_* constants are set correctly'}
+
+  max_height=int(OP_RETURN_bitcoin_cmd('getblockcount', testnet))
+
+  if not block_number:
+    block_number = max_height
+
+  # Collect and return the results
+
+  results=[]
+
+  for height in [block_number, 0]:
+    if height==0:
+      txids=OP_RETURN_list_mempool_txns(testnet) # if mempool, only get list for now (to save RPC calls)
+      txns=None
+    else:
+      txns=OP_RETURN_get_block_txns(height, testnet) # if block, get all fully unpacked
+      txids=txns.keys()
+
+    for txid in txids:
+      if height==0:
+        txn_unpacked=OP_RETURN_get_mempool_txn(txid, testnet)
+      else:
+        txn_unpacked=txns[txid]
+
+      found=OP_RETURN_find_txn_data(txn_unpacked)
+
+      if found:
+        # Collect data from txid which matches ref and contains an OP_RETURN
+
+        result={
+          'txids': [str(txid)],
+          'data': found['op_return'],
+        }
+
+        key_heights={height: True}
+
+        # Work out which other block heights / mempool we should try
+
+        if height==0:
+          try_heights=[] # nowhere else to look if first still in mempool
+        else:
+          result['ref']=OP_RETURN_calc_ref(height, txid, txns.keys())
+          try_heights=OP_RETURN_get_try_heights(height+1, max_height, False)
+
+        # Collect the rest of the data, if appropriate
+
+        if height==0:
+          this_txns=OP_RETURN_get_mempool_txns(testnet) # now retrieve all to follow chain
+        else:
+          this_txns=txns
+
+        last_txid=txid
+        this_height=height
+
+        while found['index'] < (len(txn_unpacked['vout'])-1): # this means more data to come
+          next_txid=OP_RETURN_find_spent_txid(this_txns, last_txid, found['index']+1)
+
+          # If we found the next txid in the data chain
+
+          if next_txid:
+            result['txids'].append(str(next_txid))
+
+            txn_unpacked=this_txns[next_txid]
+            found=OP_RETURN_find_txn_data(txn_unpacked)
+
+            if found:
+              result['data']+=found['op_return']
+              key_heights[this_height]=True
+            else:
+              result['error']='Data incomplete - missing OP_RETURN'
+              break
+
+            last_txid=next_txid
+
+          # Otherwise move on to the next height to keep looking
+
+          else:
+            if len(try_heights):
+              this_height=try_heights.pop(0)
+
+              if this_height==0:
+                this_txns=OP_RETURN_get_mempool_txns(testnet)
+              else:
+                this_txns=OP_RETURN_get_block_txns(this_height, testnet)
+
+            else:
+              result['error']='Data incomplete - could not find next transaction'
+              break
+
+        # Finish up the information about this result
+
+        result['heights']=list(key_heights.keys())
+        results.append(result)
+
+  return results
 
 def OP_RETURN_retrieve(ref, max_results=1, testnet=False):
   # Validate parameters and get status of Bitcoin Core
@@ -676,17 +776,20 @@ def OP_RETURN_find_spent_txid(txns, spent_txid, spent_vout):
 
 
 def OP_RETURN_find_txn_data(txn_unpacked):
-  for index, output in enumerate(txn_unpacked['vout']):
-    hex_code = output['scriptPubKey']
-    if type(output['scriptPubKey']) == {}:
-      hex_code = output['scriptPubKey']['hex']
-    op_return=OP_RETURN_get_script_data(OP_RETURN_hex_to_bin(hex_code))
+  try:
+    for index, output in enumerate(txn_unpacked['vout']):
+      hex_code = output['scriptPubKey']
+      if type(output['scriptPubKey']) == {}:
+        hex_code = output['scriptPubKey']['hex']
+      op_return=OP_RETURN_get_script_data(OP_RETURN_hex_to_bin(hex_code))
 
-    if op_return:
-      return {
-        'index': index,
-        'op_return': op_return,
-      }
+      if op_return:
+        return {
+          'index': index,
+          'op_return': op_return,
+        }
+  except:
+    pass
 
   return None
 
