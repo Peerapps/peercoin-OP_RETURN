@@ -24,7 +24,9 @@
 # THE SOFTWARE.
 
 
-import subprocess, base64, json, time, random, os.path, binascii, struct, string, re, hashlib, math
+import subprocess, base64, json, time, random, os.path, binascii
+import struct, string, re, hashlib, math
+import platform
 
 
 # Python 2-3 compatibility logic
@@ -414,7 +416,17 @@ def OP_RETURN_bitcoin_cmd(command, testnet, *args): # more params are read from 
     password=OP_RETURN_BITCOIN_PASSWORD
 
     if not (len(user) and len(password)):
-      conf_lines=open(os.path.expanduser('~')+'/.ppcoin/ppcoin.conf').readlines()
+
+
+      if platform.system() == 'Darwin':
+          btc_conf_file = os.path.expanduser('~/Library/Application Support/PPCoin/')
+      elif platform.system() == 'Windows':
+          btc_conf_file = os.path.join(os.environ['APPDATA'], 'PPCoin')
+      else:
+          btc_conf_file = os.path.expanduser('~/.ppcoin')
+      btc_conf_file = os.path.join(btc_conf_file, 'ppcoin.conf')
+
+      conf_lines=open(btc_conf_file).readlines()
 
       for conf_line in conf_lines:
         parts=conf_line.strip().split('=', 1) # up to 2 parts
