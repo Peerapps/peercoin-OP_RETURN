@@ -52,7 +52,7 @@ OP_RETURN_BTC_FEE=0.01 # BTC fee to pay per transaction
 OP_RETURN_BTC_DUST=0.00001 # omit BTC outputs smaller than this
 
 OP_RETURN_MAX_BYTES=80 # maximum bytes in an OP_RETURN (40 as of Bitcoin 0.10) this lib can handle up to 65536 bytes
-OP_RETURN_STORE_SPLIT=False # Splitting of data if longer than OP_RETURN_MAX_BYTES
+OP_RETURN_STORE_SPLIT=True # Splitting of data if longer than OP_RETURN_MAX_BYTES
 OP_RETURN_MAX_BLOCKS=10 # maximum number of blocks to try when retrieving data
 
 OP_RETURN_NET_TIMEOUT=10 # how long to time out (in seconds) when communicating with peercoin node
@@ -351,10 +351,12 @@ def OP_RETURN_create_txn(inputs, outputs, metadata, metadata_pos, testnet):
 
   if metadata_len<=75:
     payload=bytearray((metadata_len,))+metadata # length byte + data (https://en.bitcoin.it/wiki/Script)
-  elif metadata_len<=256:
+  elif metadata_len<256:
     payload=b'\x4c'+bytearray((metadata_len,))+metadata # OP_PUSHDATA1 format
+  elif metadata_len<65536:
+    payload=b'\x4d'+struct.pack('<H',metadata_len)+metadata # OP_PUSHDATA2 format
   else:
-    payload=b'\x4d'+bytearray((metadata_len%256,))+bytearray((int(metadata_len/256),))+metadata # OP_PUSHDATA2 format
+    payload=b'\x4e'+struct.pack('<L',metadata_len)+metadata # OP_PUSHDATA4 format
 
   metadata_pos=min(max(0, metadata_pos), len(txn_unpacked['vout'])) # constrain to valid values
 
@@ -373,10 +375,10 @@ def OP_RETURN_sign_send_txn(raw_txn, testnet):
 
   # Check if the peercoin transaction fee is sufficient to cover the txn (0.01PPC/kb)
   txn_size = len(signed_txn['hex'])/2 # 2 hex chars per byte
-  if (txn_size/1024 > OP_RETURN_BTC_FEE*100):
+  if (txn_size/1000 > OP_RETURN_BTC_FEE*100):
     return {'error': 'Transaction fee too low to be accepted on the peercoin chain. Required fee: ' + str(math.ceil(txn_size/1024) * 0.01) + ' PPC'}
 
-  send_txid=OP_RETURN_bitcoin_cmd('sendrawtransaction', testnet, signed_txn['hex'])
+  send_txid=OP_RETURN_bitcoin_cmd('sendrawtransaction', testnet, signed_txn['hex'], 1)
   if not (isinstance(send_txid, basestring) and len(send_txid)==64):
     return {'error': 'Could not send the transaction'}
 
@@ -406,9 +408,9 @@ def OP_RETURN_get_raw_block(height, testnet):
   block_hash=OP_RETURN_bitcoin_cmd('getblockhash', testnet, height)
   if not (isinstance(block_hash, basestring) and len(block_hash)==64):
     return {'error': 'Block at height '+str(height)+' not found'}
-
+  binfo = OP_RETURN_bitcoin_cmd('getblock', testnet, block_hash, True, True)
   return {
-    'block': OP_RETURN_hex_to_bin(OP_RETURN_bitcoin_cmd('getblock', testnet, block_hash, False))
+    'block': binfo
   }
 
 
@@ -417,9 +419,10 @@ def OP_RETURN_get_block_txns(height, testnet):
   if 'error' in raw_block:
     return {'error': raw_block['error']}
 
-  block=OP_RETURN_unpack_block(raw_block['block'])
-
-  return block['txs']
+  results = {}
+  for r in raw_block['block']['tx']:
+    results[r['txid']] = r
+  return results
 
 
 # Talking to bitcoin-cli
@@ -459,7 +462,7 @@ def OP_RETURN_bitcoin_cmd(command, testnet, *args): # more params are read from 
     user=OP_RETURN_BITCOIN_USER
     password=OP_RETURN_BITCOIN_PASSWORD
 
-    if not (len(port) and len(user) and len(password)):
+    if not (len(user) and len(password)):
       conf_lines=open(os.path.expanduser('~')+'/.ppcoin/ppcoin.conf').readlines()
 
       for conf_line in conf_lines:
@@ -473,7 +476,7 @@ def OP_RETURN_bitcoin_cmd(command, testnet, *args): # more params are read from 
           password=parts[1]
 
     if not len(port):
-      port=19902 if testnet else 9902
+      port=9904 if testnet else 9902
 
     if not (len(user) and len(password)):
       return None # no point trying in this case
@@ -689,7 +692,7 @@ def OP_RETURN_unpack_txn_buffer(buffer):
   for _ in range(outputs):
     output={}
 
-    output['value']=float(buffer.shift_uint64())/100000000
+    output['value']=float(buffer.shift_uint64())/1000000
     length=buffer.shift_varint()
     output['scriptPubKey']=OP_RETURN_bin_to_hex(buffer.shift(length))
 
@@ -711,7 +714,10 @@ def OP_RETURN_find_spent_txid(txns, spent_txid, spent_vout):
 
 def OP_RETURN_find_txn_data(txn_unpacked):
   for index, output in enumerate(txn_unpacked['vout']):
-    op_return=OP_RETURN_get_script_data(OP_RETURN_hex_to_bin(output['scriptPubKey']))
+    hex_code = output['scriptPubKey']
+    if type(output['scriptPubKey']) == {}:
+      hex_code = output['scriptPubKey']['hex']
+    op_return=OP_RETURN_get_script_data(OP_RETURN_hex_to_bin(hex_code))
 
     if op_return:
       return {
@@ -757,7 +763,7 @@ def OP_RETURN_pack_txn(txn):
   binary+=OP_RETURN_pack_varint(len(txn['vout']))
 
   for output in txn['vout']:
-    binary+=OP_RETURN_pack_uint64(int(round(output['value']*100000000)))
+    binary+=OP_RETURN_pack_uint64(int(round(output['value']*1000000)))
     binary+=OP_RETURN_pack_varint(int(len(output['scriptPubKey'])/2)) # divide by 2 because it is currently in hex
     binary+=OP_RETURN_hex_to_bin(output['scriptPubKey'])
 
