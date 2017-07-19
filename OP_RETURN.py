@@ -60,55 +60,6 @@ OP_RETURN_NET_TIMEOUT=10 # how long to time out (in seconds) when communicating 
 
 # User-facing functions
 
-def OP_RETURN_send(send_address, send_amount, metadata, testnet=False):
-  # Validate some parameters
-
-  if not OP_RETURN_bitcoin_check(testnet):
-    return {'error': 'Please check Bitcoin Core is running and OP_RETURN_BITCOIN_* constants are set correctly'}
-
-  result=OP_RETURN_bitcoin_cmd('validateaddress', testnet, send_address)
-  if not ('isvalid' in result and result['isvalid']):
-    return {'error': 'Send address could not be validated: '+send_address}
-
-  if isinstance(metadata, basestring):
-    metadata=metadata.encode('utf-8') # convert to binary string
-
-  metadata_len=len(metadata)
-
-  if metadata_len>65536:
-    return {'error': 'This library only supports metadata up to 65536 bytes in size'}
-
-  if metadata_len>OP_RETURN_MAX_BYTES:
-    return {'error': 'Metadata has '+str(metadata_len)+' bytes but is limited to '+str(OP_RETURN_MAX_BYTES)+' (see OP_RETURN_MAX_BYTES)'}
-
-  # Calculate amounts and choose inputs
-
-  output_amount=send_amount+OP_RETURN_BTC_FEE
-
-  inputs_spend=OP_RETURN_select_inputs(output_amount, testnet)
-
-  if 'error' in inputs_spend:
-    return {'error': inputs_spend['error']}
-
-  change_amount=inputs_spend['total']-output_amount
-
-  # Build the raw transaction
-
-  # change_address=OP_RETURN_bitcoin_cmd('getrawchangeaddress', testnet)
-  change_address=OP_RETURN_get_change_address(inputs_spend['inputs'])
-
-  outputs={send_address: send_amount}
-
-  if change_amount>=OP_RETURN_BTC_DUST:
-    outputs[change_address]=change_amount
-
-  raw_txn=OP_RETURN_create_txn(inputs_spend['inputs'], outputs, metadata, len(outputs), testnet)
-
-  # Sign and send the transaction, return result
-
-  return OP_RETURN_sign_send_txn(raw_txn, testnet)
-
-
 def OP_RETURN_store(data, testnet=False):
   # Data is stored in OP_RETURNs within a series of chained transactions.
   # If the OP_RETURN is followed by another output, the data continues in the transaction spending that output.
